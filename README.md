@@ -1,68 +1,35 @@
 # Genshin.Fps.UnlockerIsland
 
-> 📖 [点击查看中文版使用说明](./README_CN.md)
-
-**Unlock your freedom in Teyvat.**  
-A lightweight, C++17-based tool for unlocking Genshin Impact's frame rate limit, customizing the in-game field of view (FOV), and disabling fog effects for enhanced clarity.
+> 📖 [中文版介绍](./README_CN.md)
 
 ## ✨ Features
 
-- 🚀 Unlock frame rate up to 2147483647 FPS
-- 🎥 Customize in-game Field of View (FOV)
-- 🌫️ Remove fog effects to improve visual clarity
-- 🧩 DLL injection using `LoadLibraryW`
-- 🔧 Realtime memory patching and MinHook detours
-- 🖼️ ImGui-based in-game overlay
+- FPS unlock
+- Camera/FOV adjustment
+- Graphics enhancement
+- *Additional features ...* 
 
-## 🛠️ Technical Details
+### Prerequisites
+- Windows 10/11 operating system
+- Genshin Impact installed
 
-- **Language:** C++
-- **Standard:** ISO C++17 (`/std:c++17`)
-- **Architecture:** 64-bit (x86_64)
-- **Platform:** Windows 10/11
-- **Injection Method:** LoadLibrary + CreateRemoteThread
-- **Hooking Library:** MinHook
-- **Graphics API:** DirectX 11
-
-## 🚀 How It Works
-
-The launcher starts Genshin Impact in suspended mode, injects `Genshin.Fps.UnlockerIsland.dll` via `LoadLibraryW`, and resumes the process. The DLL modifies memory to:
-
-- Unlock FPS limit
-- Modify camera FOV
-- Remove fog-related rendering flags
-
-## 📦 Usage
-
-1. Download the injector and DLL.
-2. Ensure `GenshinImpact.exe` or `YuanShen.exe` is available.
-3. Run the launcher:
-   - Game path will be read from an `.ini` file or selected manually.
-   - The launcher starts the game suspended.
-   - Injects the DLL using LoadLibrary.
-   - Resumes the game.
-4. Use `Home` key to toggle the in-game overlay.
-
-## ⚙️ Configuration
-
-- Game path is saved to a `.ini` file after first selection.
-- DLL must be in the same folder as the launcher executable.
-
-## 📜 License
-
-This project is licensed under the [MIT License](./LICENSE).  
-You are free to use, modify, and distribute it with proper attribution.
+### In-Game Controls
+- `Home` key: Open/close the feature menu
+- Controller `RB + LB + X + D-Pad Up`: Open the feature menu
 
 ## ⚠️ Disclaimer
 
-This is an unofficial third-party tool.  
-Using it may violate the Terms of Service of Genshin Impact and result in bans.  
-The author assumes **no responsibility** for any consequences resulting from use of this software.
+- This tool is an unofficial third-party plugin and is not affiliated with the official game in any way
+- Use of this tool may violate the official **Terms of Service** and carries risks including but not limited to account suspension, functionality restrictions, and other unforeseen consequences
+- By using this tool, you voluntarily assume all risks. The author and contributors assume no responsibility for any direct or indirect damages (including but not limited to account bans, data loss, legal disputes)
+- This tool is for personal learning and technical research purposes only. Commercial use or any use that violates laws, regulations, or platform policies is strictly prohibited
+- If you disagree with any of the above terms, please stop using and delete this tool immediately
 
-## 📩 Contact
+## 📜 License
 
-Open an [issue](https://github.com/isxlan0/Genshin.Fps.UnlockerIsland/issues) for bugs, suggestions, or contributions.
+This project is open-sourced under the [MIT License](./LICENSE).  
+Free use, modification, and distribution are permitted, provided that the original author attribution is retained.
 
 ---
 
-*For research and educational purposes only.*
+*This project is for learning and research purposes only. Commercial use is prohibited.*
