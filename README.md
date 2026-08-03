@@ -5,8 +5,7 @@
 ## ✨ Features
 
 - FPS unlock
-- Camera/FOV adjustment
-- Graphics enhancement
+- Camera FOV adjustment
 - *Additional features ...* 
 
 ### Prerequisites
