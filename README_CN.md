@@ -1,9 +1,5 @@
 # Genshin.Fps.UnlockerIsland
 
-## 📌 项目说明
-
-本项目 Fork 自 [virtualesp/Genshin.Fps.UnlockerIsland](https://github.com/virtualesp/Genshin.Fps.UnlockerIsland)，在原功能基础上进行了扩展和部分维护。
-
 ## ✨ 功能特性
 
 - 帧率解锁
