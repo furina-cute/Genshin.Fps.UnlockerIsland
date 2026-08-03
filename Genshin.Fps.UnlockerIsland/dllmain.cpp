@@ -1,4 +1,6 @@
-﻿#include "pch.h"
+#include "pch.h"
+#include <array>
+#include <atomic>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -25,6 +27,7 @@ struct Menu_T
     bool enable_fov_override = false;
     bool enable_display_fog_override = false;
     bool enable_Perspective_override = false;
+    bool enable_hide_uid = false;
     bool enable_syncount_override = true;
 
 };
@@ -33,6 +36,279 @@ std::vector<Menu_T::FpsCorner> selected_corners = { Menu_T::FpsCorner::TopLeft }
 extern Menu_T menu;
 
 Menu_T menu = {};
+
+namespace
+{
+    std::uint8_t *g_hide_uid_find_string = nullptr;
+    std::uint8_t *g_hide_uid_find_object = nullptr;
+    std::uint8_t *g_hide_uid_object_active = nullptr;
+    std::uint8_t *g_hide_uid_player_perspective_stub = nullptr;
+
+    constexpr std::array<const char *, 3> k_hide_uid_paths {
+        "/BetaWatermarkCanvas(Clone)/Panel/TxtUID",
+        "/Canvas/Pages/PlayerProfilePage/GrpProfile/Right/GrpPlayerCard/UID",
+        "/Canvas/Pages/InLevelMapPage/GrpMap/GrpPlayer/UID",
+    };
+
+    std::array<void *, k_hide_uid_paths.size()> g_hide_uid_string_cache {};
+    std::array<void *, k_hide_uid_paths.size()> g_hide_uid_object_cache {};
+    std::array<bool, k_hide_uid_paths.size()> g_hide_uid_hidden {};
+    std::atomic_bool g_hide_uid_available { false };
+    std::atomic<ULONGLONG> g_hide_uid_next_tick { 0 };
+    constexpr ULONGLONG k_hide_uid_retry_interval_ms = 1200;
+    constexpr ULONGLONG k_hide_uid_steady_interval_ms = 8000;
+    std::atomic_int g_hide_uid_exception_streak { 0 };
+
+    using find_string_fn = void *(__fastcall *)(const char *);
+    using find_object_fn = void *(__fastcall *)(void *);
+    using object_active_fn = void(__fastcall *)(void *, bool);
+
+    bool patch_bytes(std::uint8_t *address, const std::uint8_t *bytes, std::size_t size)
+    {
+        DWORD old_protect = 0;
+        if (!VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &old_protect))
+            return false;
+        std::memcpy(address, bytes, size);
+        FlushInstructionCache(GetCurrentProcess(), address, size);
+        DWORD ignored = 0;
+        VirtualProtect(address, size, old_protect, &ignored);
+        return true;
+    }
+
+    template <std::size_t N>
+    bool patch_bytes(std::uint8_t *address, const std::array<std::uint8_t, N> &bytes)
+    {
+        return patch_bytes(address, bytes.data(), bytes.size());
+    }
+
+    bool patch_rel32_jump(std::uint8_t *address, std::uintptr_t absolute_target)
+    {
+        const auto next = reinterpret_cast<std::uintptr_t>(address + 5);
+        const auto diff = static_cast<std::intptr_t>(absolute_target) - static_cast<std::intptr_t>(next);
+        if (diff < INT32_MIN || diff > INT32_MAX)
+            return false;
+        std::array<std::uint8_t, 5> patch { 0xE9, 0, 0, 0, 0 };
+        const auto displacement = static_cast<std::int32_t>(diff);
+        std::memcpy(patch.data() + 1, &displacement, sizeof(displacement));
+        return patch_bytes(address, patch);
+    }
+
+    void hide_uid_from_main_thread();
+
+    void *allocate_near_address(void *target, std::size_t size)
+    {
+        SYSTEM_INFO info {};
+        GetSystemInfo(&info);
+
+        const std::uintptr_t granularity = static_cast<std::uintptr_t>(info.dwAllocationGranularity);
+        const std::uintptr_t target_address = reinterpret_cast<std::uintptr_t>(target);
+        const std::uintptr_t max_distance = 0x70000000ull;
+
+        for (std::uintptr_t distance = granularity; distance < max_distance; distance += granularity)
+        {
+            for (int direction : { 1, -1 })
+            {
+                std::uintptr_t hint_address = 0;
+                if (direction > 0)
+                {
+                    hint_address = target_address + distance;
+                }
+                else
+                {
+                    if (target_address <= distance)
+                        continue;
+                    hint_address = target_address - distance;
+                }
+
+                hint_address -= hint_address % granularity;
+                void *allocated = VirtualAlloc(reinterpret_cast<void *>(hint_address), size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+                if (allocated != nullptr)
+                    return allocated;
+            }
+        }
+
+        return VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    }
+
+    void *build_player_perspective_stub(std::uint8_t *player_perspective)
+    {
+        if (g_hide_uid_player_perspective_stub != nullptr)
+            return g_hide_uid_player_perspective_stub;
+
+        auto *stub = static_cast<std::uint8_t *>(allocate_near_address(player_perspective, 0x1000));
+        if (stub == nullptr)
+            return nullptr;
+
+        std::array<std::uint8_t, 23> code {
+            0x48, 0x83, 0xEC, 0x28,
+            0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0xFF, 0xD0,
+            0x48, 0x83, 0xC4, 0x28,
+            0x31, 0xC0,
+            0xC3
+        };
+
+        const auto callback = reinterpret_cast<std::uintptr_t>(&hide_uid_from_main_thread);
+        std::memcpy(code.data() + 6, &callback, sizeof(callback));
+        std::memcpy(stub, code.data(), code.size());
+        FlushInstructionCache(GetCurrentProcess(), stub, code.size());
+
+        g_hide_uid_player_perspective_stub = stub;
+        return stub;
+    }
+
+    bool patch_player_perspective(std::uint8_t *player_perspective)
+    {
+        void *stub = build_player_perspective_stub(player_perspective);
+        if (stub == nullptr)
+            return false;
+
+        return patch_rel32_jump(player_perspective, reinterpret_cast<std::uintptr_t>(stub));
+    }
+
+    void hide_uid_from_main_thread();
+
+    int hide_uid_once_unsafe()
+    {
+        const auto find_string = reinterpret_cast<find_string_fn>(g_hide_uid_find_string);
+        const auto find_object = reinterpret_cast<find_object_fn>(g_hide_uid_find_object);
+        const auto object_active = reinterpret_cast<object_active_fn>(g_hide_uid_object_active);
+        int hidden_count = 0;
+
+        __try
+        {
+            for (std::size_t i = 0; i < k_hide_uid_paths.size(); ++i)
+            {
+                void *string_object = g_hide_uid_string_cache[i];
+                if (string_object == nullptr)
+                {
+                    string_object = find_string(k_hide_uid_paths[i]);
+                    g_hide_uid_string_cache[i] = string_object;
+                }
+                if (string_object == nullptr)
+                    continue;
+
+                void *object = g_hide_uid_object_cache[i];
+                if (object == nullptr)
+                {
+                    object = find_object(string_object);
+                    g_hide_uid_object_cache[i] = object;
+                }
+                if (object == nullptr)
+                    continue;
+
+                object_active(object, false);
+                g_hide_uid_hidden[i] = true;
+                ++hidden_count;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1;
+        }
+
+        return hidden_count;
+    }
+
+    bool hide_uid_once()
+    {
+        if (!g_hide_uid_available.load() || !menu.enable_hide_uid)
+            return false;
+
+        if (g_hide_uid_find_string == nullptr || g_hide_uid_find_object == nullptr || g_hide_uid_object_active == nullptr)
+            return false;
+
+        const int hidden_count = hide_uid_once_unsafe();
+        if (hidden_count < 0)
+        {
+            g_hide_uid_string_cache.fill(nullptr);
+            g_hide_uid_object_cache.fill(nullptr);
+            const int streak = g_hide_uid_exception_streak.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (streak >= 3)
+                g_hide_uid_available.store(false);
+            return false;
+        }
+
+        g_hide_uid_exception_streak.store(0, std::memory_order_relaxed);
+        if (hidden_count > 0)
+            return true;
+
+        return false;
+    }
+
+    void restore_uid_from_main_thread()
+    {
+        if (!g_hide_uid_available.load())
+            return;
+
+        bool any_hidden = false;
+        for (bool h : g_hide_uid_hidden)
+        {
+            if (h)
+            {
+                any_hidden = true;
+                break;
+            }
+        }
+        if (!any_hidden)
+            return;
+
+        const auto object_active = reinterpret_cast<object_active_fn>(g_hide_uid_object_active);
+        __try
+        {
+            for (std::size_t i = 0; i < k_hide_uid_paths.size(); ++i)
+            {
+                if (!g_hide_uid_hidden[i])
+                    continue;
+                void *object = g_hide_uid_object_cache[i];
+                if (object == nullptr)
+                    continue;
+                object_active(object, true);
+                g_hide_uid_hidden[i] = false;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            g_hide_uid_string_cache.fill(nullptr);
+            g_hide_uid_object_cache.fill(nullptr);
+            g_hide_uid_hidden.fill(false);
+            return;
+        }
+    }
+
+    void hide_uid_from_main_thread()
+    {
+        if (!g_hide_uid_available.load() || !menu.enable_hide_uid)
+            return;
+
+        const ULONGLONG now = GetTickCount64();
+        ULONGLONG next_allowed = g_hide_uid_next_tick.load(std::memory_order_relaxed);
+        if (now < next_allowed)
+            return;
+
+        if (!g_hide_uid_next_tick.compare_exchange_strong(
+                next_allowed, now + k_hide_uid_retry_interval_ms, std::memory_order_relaxed))
+            return;
+
+        const bool hidden = hide_uid_once();
+        const ULONGLONG interval = hidden ? k_hide_uid_steady_interval_ms : k_hide_uid_retry_interval_ms;
+        g_hide_uid_next_tick.store(now + interval, std::memory_order_relaxed);
+    }
+
+    bool InitHideUid()
+    {
+        auto scan_signature = [](const std::string &pattern) -> std::uint8_t * {
+            return reinterpret_cast<std::uint8_t *>(PatternScanner::Scan(pattern));
+        };
+
+        g_hide_uid_find_string = scan_signature("56 48 83 EC 20 48 89 CE E8 ?? ?? ?? ?? 48 89 F1 89 C2 48 83 C4 20 5E E9 ?? ?? ?? ?? CC CC CC CC 55 56 57 53 48 83 EC 28 48 8D 6C 24 20 48 C7 45 00 FE FF FF FF 48 89 CE 85 D2 74 4E");
+        g_hide_uid_find_object = scan_signature("40 53 48 83 EC 50 48 89 4C 24 60 48 8D 54 24 20 48 8D 4C 24 60 E8 ?? ?? ?? ?? 48 8B 08 48 85 C9 75 04 48 8D 48 08 E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 8B D8 48 85 C9 74 11 48 83 7C 24 28 00 76 09");
+        g_hide_uid_object_active = scan_signature("48 89 5C 24 08 57 48 83 EC 20 0F B6 FA 48 8B D9 48 85 C9 74 22 E8 06 81 FF FF 48 85 C0 74 18 40 84 FF 48 8B C8 0F 95 C2 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? CC");
+
+        g_hide_uid_available.store(g_hide_uid_find_string != nullptr && g_hide_uid_find_object != nullptr && g_hide_uid_object_active != nullptr);
+        return g_hide_uid_available.load();
+    }
+}
 
 namespace Gui
 {
@@ -109,7 +385,7 @@ namespace Gui
             builder.AddRanges(io.Fonts->GetGlyphRangesChineseFull());
             builder.BuildRanges(&ranges);
 
-            io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyhbd.ttc", 20.0f, NULL, ranges.Data);
+            io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyhbd.ttc", 16.0f, NULL, ranges.Data);
             io.Fonts->Build();
 
             ImGui::StyleColorsDark();
@@ -158,6 +434,24 @@ namespace Gui
             break;
         }
         return pos;
+    }
+
+    static std::string GetConfigPath()
+    {
+        char path[MAX_PATH] = { 0 };
+        HMODULE module = NULL;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCSTR>(&GetConfigPath), &module))
+            return "";
+
+        if (GetModuleFileNameA(module, path, MAX_PATH) == 0)
+            return "";
+
+        std::string dir(path);
+        const auto pos = dir.find_last_of("\\/");
+        if (pos != std::string::npos)
+            dir.resize(pos + 1);
+        return dir + "Genshin.Fps.UnlockerIsland.bin";
     }
 
     // 保存
@@ -273,7 +567,7 @@ namespace Gui
 
         if (menu.showGui)
         {
-            ImGui::SetNextWindowSize(ImVec2(300, 780), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(280, 500), ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
 
             ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoCollapse
@@ -291,7 +585,7 @@ namespace Gui
                 ImGui::Separator();
             }
 
-            ImGui::Spacing(); ImGui::Spacing();
+            // ImGui::Spacing(); ImGui::Spacing();
 
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
@@ -330,6 +624,7 @@ namespace Gui
                 ImGui::Checkbox(u8"启用去雾霾", &menu.enable_display_fog_override);
 
                 ImGui::Checkbox(u8"启用去虚化", &menu.enable_Perspective_override);
+                ImGui::Checkbox(u8"隐藏玩家UID", &menu.enable_hide_uid);
             }
 
             if (ImGui::CollapsingHeader(u8"帧数显示", flags))
@@ -370,24 +665,33 @@ namespace Gui
                         }
                     }
                 }
-                if (ImGui::Button(u8"保存设置", ImVec2(138, 40)))
+                if (ImGui::Button(u8"保存设置", ImVec2(110, 28)))
                 {
-                    MenuSaveConfig("C:\\Users\\Genshin.Fps.UnlockerIsland.bin");
+                    const std::string configPath = GetConfigPath();
+                    MenuSaveConfig(configPath.c_str());
                 }
                 ImGui::SameLine();
-                if (ImGui::Button(u8"加载设置", ImVec2(138, 40)))
+                if (ImGui::Button(u8"加载设置", ImVec2(110, 28)))
                 {
-                    MenuLoadConfig("C:\\Users\\Genshin.Fps.UnlockerIsland.bin");
+                    const std::string configPath = GetConfigPath();
+                    MenuLoadConfig(configPath.c_str());
                 }
             }
 
-            ImGui::Text(u8"本程序理论可以自动适配最新版游戏\n如出现报错请联系作者反馈!\n免费项目!请勿非法盈利!");
-            if (ImGui::Selectable(u8"作者:哔哩哔哩-柯莱宝贝", false, ImGuiSelectableFlags_DontClosePopups)) {
-                ShellExecuteA(NULL, "open", "https://space.bilibili.com/1831941574", NULL, NULL, SW_SHOWNORMAL);
-            }
-
-            ImGui::End();
+        ImGui::Text(u8"本程序理论可以自动适配最新版游戏\n如出现报错请联系作者反馈!\n免费项目!请勿非法盈利!");
+                
+        if (ImGui::Selectable(u8"原作者（已停止更新）:哔哩哔哩-柯莱宝贝", false, ImGuiSelectableFlags_DontClosePopups)) {
+            // Use ShellExecuteW for better Unicode support
+            ShellExecuteW(NULL, L"open", L"https://space.bilibili.com/1831941574", NULL, NULL, SW_SHOWNORMAL);
         }
+
+        if (ImGui::Selectable(u8"分支版本作者:Time_kiwi_fruit", false, ImGuiSelectableFlags_DontClosePopups)) {
+            // Use ShellExecuteW for better Unicode support
+            ShellExecuteW(NULL, L"open", L"https://github.com/furina-cute", NULL, NULL, SW_SHOWNORMAL);
+        }
+
+        ImGui::End();
+    }
 
 
         ImGui::Render();
@@ -453,7 +757,8 @@ namespace Gui
 
                 if (msgBoxComboNow && !msgBoxComboPrev)
                 {
-                    MenuLoadConfig("C:\\Users\\Genshin.Fps.UnlockerIsland.bin");
+                    const std::string configPath = GetConfigPath();
+                    MenuLoadConfig(configPath.c_str());
                 }
                 msgBoxComboPrev = msgBoxComboNow;
             }
@@ -540,6 +845,15 @@ namespace GameHook
 
     void* HookPlayer_Perspective(void* RCX, float Display, void* R8)
     {
+        if (menu.enable_hide_uid)
+        {
+            hide_uid_from_main_thread();
+        }
+        else
+        {
+            restore_uid_from_main_thread();
+        }
+
         if (menu.enable_Perspective_override)
         {
             Display = 1.f;
@@ -617,6 +931,7 @@ namespace GameHook
             MessageBoxA(nullptr, "HookPlayer_Perspective install failed!", "MinHook", MB_OK | MB_ICONERROR);
         }
 
+        InitHideUid();
         return true;
     }
 }
