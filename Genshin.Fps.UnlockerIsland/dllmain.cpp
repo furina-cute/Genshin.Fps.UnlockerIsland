@@ -57,7 +57,10 @@ namespace
     std::atomic<ULONGLONG> g_hide_uid_next_tick { 0 };
     constexpr ULONGLONG k_hide_uid_retry_interval_ms = 1200;
     constexpr ULONGLONG k_hide_uid_steady_interval_ms = 8000;
+    constexpr ULONGLONG k_hide_uid_refresh_interval_ms = 60000;
     std::atomic_int g_hide_uid_exception_streak { 0 };
+    std::atomic_bool g_hide_uid_force_refresh { false };
+    std::atomic<ULONGLONG> g_hide_uid_next_refresh_tick { 0 };
 
     using find_string_fn = void *(__fastcall *)(const char *);
     using find_object_fn = void *(__fastcall *)(void *);
@@ -179,6 +182,10 @@ namespace
         {
             for (std::size_t i = 0; i < k_hide_uid_paths.size(); ++i)
             {
+                // 已隐藏的对象不重复调用，仅强制刷新时重新确认
+                if (g_hide_uid_hidden[i] && !g_hide_uid_force_refresh.load(std::memory_order_relaxed))
+                    continue;
+
                 void *string_object = g_hide_uid_string_cache[i];
                 if (string_object == nullptr)
                 {
@@ -286,11 +293,39 @@ namespace
         if (now < next_allowed)
             return;
 
+        // 每 60 秒强制刷新一次，检测对象是否被游戏重建
+        if (now >= g_hide_uid_next_refresh_tick.load(std::memory_order_relaxed))
+        {
+            g_hide_uid_force_refresh.store(true, std::memory_order_relaxed);
+            g_hide_uid_next_refresh_tick.store(now + k_hide_uid_refresh_interval_ms, std::memory_order_relaxed);
+        }
+
+        // 若全部对象已隐藏且本轮不强制刷新，拉长间隔，避免长时间挂机反复调用 Unity API
+        if (!g_hide_uid_force_refresh.load(std::memory_order_relaxed))
+        {
+            bool all_hidden = true;
+            for (bool h : g_hide_uid_hidden)
+            {
+                if (!h)
+                {
+                    all_hidden = false;
+                    break;
+                }
+            }
+            if (all_hidden)
+            {
+                g_hide_uid_next_tick.store(now + k_hide_uid_refresh_interval_ms, std::memory_order_relaxed);
+                return;
+            }
+        }
+
         if (!g_hide_uid_next_tick.compare_exchange_strong(
                 next_allowed, now + k_hide_uid_retry_interval_ms, std::memory_order_relaxed))
             return;
 
         const bool hidden = hide_uid_once();
+        g_hide_uid_force_refresh.store(false, std::memory_order_relaxed);
+
         const ULONGLONG interval = hidden ? k_hide_uid_steady_interval_ms : k_hide_uid_retry_interval_ms;
         g_hide_uid_next_tick.store(now + interval, std::memory_order_relaxed);
     }
