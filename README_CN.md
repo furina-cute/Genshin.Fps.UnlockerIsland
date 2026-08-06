@@ -1,5 +1,7 @@
 # Genshin.Fps.UnlockerIsland
 
+基于[Genshin.Fps.UnlockerIsland（现已存档）](https://github.com/isxlan0/EndField.Fps.UnlockerIsland)的分支项目。
+
 ## ✨ 功能特性
 
 - 帧率解锁
