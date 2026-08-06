@@ -1,5 +1,7 @@
 # Genshin.Fps.UnlockerIsland
 
+Based on the **[Genshin.Fps.UnlockerIsland (now archived)](https://github.com/isxlan0/EndField.Fps.UnlockerIsland)** fork project.
+
 > 📖 [中文版介绍](./README_CN.md)
 
 ## ✨ Features
