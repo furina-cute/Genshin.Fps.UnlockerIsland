@@ -245,7 +245,9 @@ namespace
 
     void restore_uid_from_main_thread()
     {
-        if (!g_hide_uid_available.load())
+        // 指针无效则无法恢复（初始化失败时 UID 从未隐藏，无需处理）；
+        // 不依赖 g_hide_uid_available，避免隐藏异常禁用后恢复被阻塞。
+        if (g_hide_uid_find_string == nullptr || g_hide_uid_find_object == nullptr || g_hide_uid_object_active == nullptr)
             return;
 
         bool any_hidden = false;
@@ -260,6 +262,8 @@ namespace
         if (!any_hidden)
             return;
 
+        const auto find_string = reinterpret_cast<find_string_fn>(g_hide_uid_find_string);
+        const auto find_object = reinterpret_cast<find_object_fn>(g_hide_uid_find_object);
         const auto object_active = reinterpret_cast<object_active_fn>(g_hide_uid_object_active);
         __try
         {
@@ -267,18 +271,43 @@ namespace
             {
                 if (!g_hide_uid_hidden[i])
                     continue;
+
+                // 缓存可能因之前的隐藏异常被清空：重新查找对象再恢复，
+                // 避免“对象仍隐藏但无法恢复”导致 UI 状态卡死。
                 void *object = g_hide_uid_object_cache[i];
                 if (object == nullptr)
+                {
+                    void *string_object = g_hide_uid_string_cache[i];
+                    if (string_object == nullptr)
+                    {
+                        string_object = find_string(k_hide_uid_paths[i]);
+                        g_hide_uid_string_cache[i] = string_object;
+                    }
+                    if (string_object == nullptr)
+                    {
+                        // 对象已不存在，无需恢复，清除标记保持状态一致
+                        g_hide_uid_hidden[i] = false;
+                        continue;
+                    }
+                    object = find_object(string_object);
+                    g_hide_uid_object_cache[i] = object;
+                }
+                if (object == nullptr)
+                {
+                    // 对象已不存在，无需恢复
+                    g_hide_uid_hidden[i] = false;
                     continue;
+                }
+
                 object_active(object, true);
                 g_hide_uid_hidden[i] = false;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
+            // 恢复过程异常：清空缓存，保留 hidden 标记以便下次重试恢复
             g_hide_uid_string_cache.fill(nullptr);
             g_hide_uid_object_cache.fill(nullptr);
-            g_hide_uid_hidden.fill(false);
             return;
         }
     }
@@ -891,7 +920,9 @@ namespace GameHook
 
         if (menu.enable_Perspective_override)
         {
-            Display = 1.f;
+            // 对齐 AntiPlayerMosaic_new：跳过原函数直接返回 0，
+            // 避免原函数重新启用虚化，实现去虚化效果。
+            return nullptr;
         }
         return g_original_Player_Perspective(RCX, Display, R8);
     }
