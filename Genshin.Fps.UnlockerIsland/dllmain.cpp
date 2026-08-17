@@ -338,7 +338,7 @@ namespace
 
         g_hide_uid_find_string = scan_signature("56 48 83 EC 20 48 89 CE E8 ?? ?? ?? ?? 48 89 F1 89 C2 48 83 C4 20 5E E9 ?? ?? ?? ?? CC CC CC CC 55 56 57 53 48 83 EC 28 48 8D 6C 24 20 48 C7 45 00 FE FF FF FF 48 89 CE 85 D2 74 4E");
         g_hide_uid_find_object = scan_signature("40 53 48 83 EC 50 48 89 4C 24 60 48 8D 54 24 20 48 8D 4C 24 60 E8 ?? ?? ?? ?? 48 8B 08 48 85 C9 75 04 48 8D 48 08 E8 ?? ?? ?? ?? 48 8B 4C 24 20 48 8B D8 48 85 C9 74 11 48 83 7C 24 28 00 76 09");
-        g_hide_uid_object_active = scan_signature("48 89 5C 24 08 57 48 83 EC 20 0F B6 FA 48 8B D9 48 85 C9 74 22 E8 06 81 FF FF 48 85 C0 74 18 40 84 FF 48 8B C8 0F 95 C2 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? CC");
+        g_hide_uid_object_active = scan_signature("48 89 5C 24 08 57 48 83 EC 20 0F B6 FA 48 8B D9 48 85 C9 74 22 E8 A6 7E FF FF 48 85 C0 74 18 40 84 FF 48 8B C8 0F 95 C2 48 8B 5C 24 30 48 83 C4 20 5F E9 69 03 56 00 48 8B CB E8 D1 27 07 00 CC");
 
         g_hide_uid_available.store(g_hide_uid_find_string != nullptr && g_hide_uid_find_object != nullptr && g_hide_uid_object_active != nullptr);
         return g_hide_uid_available.load();
@@ -957,8 +957,7 @@ namespace GameHook
             MessageBoxA(nullptr, "HookDisplayFog install failed!", "MinHook", MB_OK | MB_ICONERROR);
         }
 
-        void* Player_PerspectiveAddr = (void*)PatternScanner::Scan("E8 ? ? ? ? 48 8B BE ? ? ? ? 80 3D ? ? ? ? ? 0F 85 ? ? ? ? 80 BE ? ? ? ? ? 74 11");
-        Player_PerspectiveAddr = (void*)PatternScanner::ResolveRelativeAddress((uintptr_t)Player_PerspectiveAddr);
+        void* Player_PerspectiveAddr = (void*)PatternScanner::Scan("41 56 56 57 55 53 48 83 EC 20 41 89 D0 48 89 CE 80 3D ?? ?? ?? ?? 00 0F 85 27 01 00 00 48 8B BE ?? ?? ?? ?? 48 85 FF 0F 84 FD 00 00 00 0F B6 86 ?? ?? ?? ?? 38 86 ?? ?? ?? ?? 41 0F 95 C6 45 08 C6 41 80 FE 01 75 41 88 86 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 80 B9 C7 00 00 00 00 0F 84 19 01 00 00");
         if (!Player_PerspectiveAddr) {
             MessageBoxA(nullptr, "HookPlayer_Perspective search failed!", "PatternScanner", MB_OK | MB_ICONERROR);
         }
